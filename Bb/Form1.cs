@@ -78,6 +78,7 @@ namespace Bb
                 {
                     string mobile = boxMobile.Text.Trim();
                     string name = boxName.Text.Trim();
+                    if (name.Count() == 0) name = "nill";
                     if(checkBox1.Checked == true)
                     {
                         // --- PRINT SECTION  ---
@@ -120,7 +121,8 @@ namespace Bb
                     }
                     if (mobile.Length < 10) mobile = "0000000000";
                     string paper = "0";
-                    string args = $"{mobile} \"{name}\" {paper} {paper}";
+                    
+                    string args = $"{mobile} \"{name}\" ";
 
                     var psi = new System.Diagnostics.ProcessStartInfo
                     {
