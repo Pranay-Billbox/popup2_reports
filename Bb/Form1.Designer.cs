@@ -117,6 +117,7 @@
             this.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.MinimizeBox = false;
             this.Name = "Form1";
+            this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
             this.Text = "BillBox";
             this.TopMost = true;
             this.Load += new System.EventHandler(this.Form1_Load);

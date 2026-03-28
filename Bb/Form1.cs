@@ -1,15 +1,18 @@
-﻿using System;
+﻿using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows.Forms;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace Bb
 {
+
     public partial class Form1 : Form
     {
         private List<(string phone, string name)> contacts = new List<(string, string)>();
@@ -22,7 +25,8 @@ namespace Bb
         private const int SC_MINIMIZE = 0xF020;
         private const int SC_CLOSE = 0xF060;
         private const int VK_ESCAPE = 0x1B;
-
+        private EventWaitHandle printEvent;
+        private Thread eventThread;
         private const int SW_RESTORE = 9;
         private const int SW_SHOW = 5;
         private const uint FLASHW_ALL = 3;
@@ -30,6 +34,7 @@ namespace Bb
         private const uint SWP_NOSIZE = 0x0001;
         private const uint SWP_NOMOVE = 0x0002;
         private const uint SWP_SHOWWINDOW = 0x0040;
+
         private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
 
         // --- Win32 imports ---
@@ -60,11 +65,26 @@ namespace Bb
             CenterToScreen();
             InitializeComponent();
             InitializeSuggestionBoxes();
+            printEvent = new EventWaitHandle(
+        false,
+        EventResetMode.AutoReset,
+        @"Global\BillBox_NewPrintJob"
+    );  
+
+            // Start background listener
+            eventThread = new Thread(EventLoop)
+            {
+                IsBackground = true
+            };
+            eventThread.Start();
 
             this.MaximizeBox = false;
             this.ControlBox = true;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.TopMost = true;
+            this.Load += Form1_Load;
+            this.FormClosing += Form1_FormClosing;
+
 
             this.Resize += (s, e) =>
             {
@@ -79,7 +99,7 @@ namespace Bb
                     string mobile = boxMobile.Text.Trim();
                     string name = boxName.Text.Trim();
                     if (name.Count() == 0) name = "nill";
-                    if(checkBox1.Checked == true)
+                    if (checkBox1.Checked == true)
                     {
                         // --- PRINT SECTION  ---
                         try
@@ -121,7 +141,7 @@ namespace Bb
                     }
                     if (mobile.Length < 10) mobile = "0000000000";
                     string paper = "0";
-                    
+
                     string args = $"{mobile} \"{name}\" ";
 
                     var psi = new System.Diagnostics.ProcessStartInfo
@@ -163,14 +183,16 @@ namespace Bb
                         var newRecord = new JObject
                         {
                             ["customer_phone"] = mobile,
-                            ["customer_name"] = name 
+                            ["customer_name"] = name
                         };
 
                         records.Add(newRecord);
                         File.WriteAllText(jsonPath, doc.ToString(Formatting.Indented));
                     }
 
-                    this.Close();
+                    this.Hide();
+                    this.ShowInTaskbar = false;
+
                 }
                 catch (Exception ex)
                 {
@@ -178,49 +200,53 @@ namespace Bb
                 }
             };
         }
-
-        protected override void OnShown(EventArgs e)
+        private void EventLoop()
         {
-            base.OnShown(e);
-
-            // --- Focus force trick (like Win32) ---
-            IntPtr fgWnd = GetForegroundWindow();
-            uint fgThread = GetWindowThreadProcessId(fgWnd, IntPtr.Zero);
-            uint thisThread = GetCurrentThreadId();
-
-            if (fgThread != thisThread)
+            while (true)
             {
-                AttachThreadInput(fgThread, thisThread, true);
-                SetForegroundWindow(this.Handle);
-                AttachThreadInput(fgThread, thisThread, false);
+                printEvent.WaitOne();   // waits safely
+
+                // Switch to UI thread
+                this.BeginInvoke(new Action(() =>
+                {
+                    OnNewPrintJob();
+                }));
             }
-            else
-            {
-                SetForegroundWindow(this.Handle);
-            }
-
-            // --- Ensure visible ---
-            ShowWindow(this.Handle, SW_RESTORE);
-            SetWindowPos(this.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-
-            // --- Flash for visibility ---
-            FLASHWINFO fw = new FLASHWINFO
-            {
-                cbSize = (uint)Marshal.SizeOf(typeof(FLASHWINFO)),
-                hwnd = this.Handle,
-                dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG,
-                uCount = 5,
-                dwTimeout = 0
-            };
-            FlashWindowEx(ref fw);
-
-            CenterToScreen();
         }
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            // Prevent app exit
+            e.Cancel = true;
+            this.Hide();
+            this.ShowInTaskbar = false;
+        }
+
+        private void OnNewPrintJob()
+        {
+            // Bring window up
+            ResetFormState();
+            this.Show();
+            this.WindowState = FormWindowState.Normal;
+
+            this.TopMost = true;
+            this.Activate();
+            this.TopMost = false;
+
+            // OPTIONAL:
+            // Load PRN, ask name/mobile, etc.
+        }
+
+       
+
+      
 
         private void Form1_Load(object sender, EventArgs e)
         {
-            this.checkBox1.Checked = true;
+            this.checkBox1.Checked = false;
             LoadContacts();
+            ResetFormState();
+            this.Hide();              // 
+            this.ShowInTaskbar = false;
         }
 
         private void InitializeSuggestionBoxes()
@@ -409,6 +435,27 @@ namespace Bb
 
             ShowSuggestions(suggestionBoxName, matches, boxName);
         }
+        private void ResetFormState()
+        {
+            _updatingFields = true;
+
+            // Clear inputs
+            boxMobile.Text = "";
+            boxName.Text = "";
+
+            // Reset checkbox (e-bill / print)
+            checkBox1.Checked = false;
+
+            // Hide suggestion boxes
+            suggestionBoxMobile.Visible = false;
+            suggestionBoxName.Visible = false;
+
+            // Optional: reset focus
+            boxMobile.Focus();
+
+            _updatingFields = false;
+        }
+
 
         private void ShowSuggestions(ListBox listBox, List<string> matches, TextBox source)
         {
@@ -589,5 +636,4 @@ namespace Bb
         }
 
     }
-
 }
