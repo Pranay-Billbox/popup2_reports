@@ -1,14 +1,19 @@
-﻿using Newtonsoft.Json;
+﻿using Microsoft.Win32;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+
 
 namespace Bb
 {
@@ -57,196 +62,204 @@ namespace Bb
             public uint dwTimeout;
         }
 
-        private string dataPath = @"C:\BillBox\common\data.json";
-
         public Form1()
         {
             this.StartPosition = FormStartPosition.Manual;
             CenterToScreen();
             InitializeComponent();
             InitializeSuggestionBoxes();
-            printEvent = new EventWaitHandle(
-        false,
-        EventResetMode.AutoReset,
-        @"Global\BillBox_NewPrintJob"
-    );  
-
-            // Start background listener
-            eventThread = new Thread(EventLoop)
-            {
-                IsBackground = true
-            };
-            eventThread.Start();
-
+            
             this.MaximizeBox = false;
             this.ControlBox = true;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.TopMost = true;
             this.Load += Form1_Load;
             this.FormClosing += Form1_FormClosing;
-
+            this.WindowState = FormWindowState.Minimized;
+            this.Show();
+            this.WindowState = FormWindowState.Normal;
 
             this.Resize += (s, e) =>
             {
                 if (this.WindowState == FormWindowState.Minimized)
                     this.WindowState = FormWindowState.Normal;
             };
-
             button1.Click += (s, e) =>
             {
                 try
                 {
                     string mobile = boxMobile.Text.Trim();
                     string name = boxName.Text.Trim();
-                    if (name.Count() == 0) name = "nill";
-                    if (checkBox1.Checked == true)
+                    string prnPath = @"C:\BillBox\Prints\print.prn";
+                    string pdfPath = @"C:\BillBox\Bills\TEMP_CONVERTED.pdf";
+                    string store_id_path = @"C:\BillBox\common\store_id.ini";
+                    string store_id = ReadStringFromIniFile(store_id_path);
+
+                    if (string.IsNullOrEmpty(name))
+                        name = "nill";
+                    if (string.IsNullOrEmpty(mobile))
+               
+                        mobile = "0000000000";
+                    
+
+                    // --- PRINT ---
+                    if (checkBox1.Checked)
                     {
-                        // --- PRINT SECTION  ---
                         try
                         {
                             string configPath = @"C:\BillBox\common\printer_config.ini";
-                            if (!File.Exists(configPath))
-                            {
-                                MessageBox.Show("Printer config missing", "Error",
-                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-                                return;
-                            }
+                            if (!File.Exists(configPath)) { MessageBox.Show("Printer config missing"); return; }
 
-                            // first line = printer name
                             string printerName = File.ReadLines(configPath).First().Trim();
 
-                            string prnPath = @"C:\BillBox\Prints\print.prn";
-
                             bool ok = RawPrinterHelper.PrintFile(printerName, prnPath);
+
                             byte[] openDrawer = { 0x1B, 0x70, 0x00, 0x19, 0xFA };
+                            byte[] cutCommand = new byte[] { 0x1D, 0x56, 0x00 };
 
-                            // Replace "Your Printer Name" with the exact Windows printer name
-                            RawPrinterHelper.SendBytesToPrinter(printerName, openDrawer);
+                            RawPrinterHelper.SendBytesToPrinter(printerName, cutCommand);
 
+                            if (!ok) { MessageBox.Show("Printer Error"); return; }
+                        }
+                        catch (Exception ex) { MessageBox.Show("Printing failed: " + ex.Message); return; }
+                    }
 
-                            if (!ok)
+                    // --- SAVE CONTACT ---
+                    string jsonPath = @"C:\BillBox\common\res.json";
+                    JObject doc = File.Exists(jsonPath) ? JObject.Parse(File.ReadAllText(jsonPath)) : new JObject { ["records"] = new JArray() };
+                    JArray records = (JArray)doc["records"];
+
+                    if (!records.Any(r => r["customer_phone"]?.ToString() == mobile))
+                    {
+                        records.Add(new JObject { ["customer_phone"] = mobile, ["customer_name"] = name });
+                        File.WriteAllText(jsonPath, doc.ToString(Formatting.Indented));
+                    }
+
+                    // Capture values for background thread before UI closes
+                    string capturedMobile = mobile;
+                    string capturedStoreId = store_id;
+                    string capturedName = name;
+
+                    this.Hide();
+
+                    // --- BACKGROUND: convert + upload ---
+                    ThreadPool.QueueUserWorkItem(_ =>
+                    {
+                        try
+                        {
+
+                            var psi = new ProcessStartInfo
                             {
-                                MessageBox.Show("Printer Error", "Error",
-                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-                                return;
+                                FileName = @"C:\BillBox\common\convert.exe",
+                                WorkingDirectory = @"C:\BillBox\common",  // <-- this is the fix
+                                UseShellExecute = true,
+                                CreateNoWindow = true
+                            };
+
+                            using (var proc = Process.Start(psi))
+                            {
+                                proc.WaitForExit();
+                            }
+                            if (checkBox2.Checked)
+                            {
+                                string owner_path = @"C:\BillBox\common\owner-mobile.ini";
+                                string owner_mobile = ReadStringFromIniFile(owner_path);
+                                UploadBillPdf(pdfPath, owner_mobile, store_id,"1234");
+                            }
+                            else
+                            {
+                                UploadBillPdf(pdfPath, capturedMobile, capturedStoreId,capturedName);
                             }
                         }
                         catch (Exception ex)
                         {
-                            MessageBox.Show("Printing failed: " + ex.Message,
-                                "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            File.AppendAllText(@"C:\BillBox\log.txt",
+                                DateTime.Now + " ERROR: " + ex + Environment.NewLine);
                         }
-
-
-                    }
-                    if (mobile.Length < 10) mobile = "0000000000";
-                    string paper = "0";
-
-                    string args = $"{mobile} \"{name}\" ";
-
-                    var psi = new System.Diagnostics.ProcessStartInfo
-                    {
-                        FileName = @"C:\BillBox\common\runner.exe",
-                        Arguments = args,
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden
-                    };
-                    var cash = new System.Diagnostics.ProcessStartInfo
-                    {
-                        FileName = @"C:\BillBox\common\cash.exe",
-                        Arguments = null,
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden
-                    };
-
-                    System.Diagnostics.Process.Start(psi);
-                    System.Diagnostics.Process.Start(cash);
-
-                    string jsonPath = @"C:\BillBox\common\res.json";
-                    JObject doc;
-
-                    if (File.Exists(jsonPath))
-                        doc = JObject.Parse(File.ReadAllText(jsonPath));
-                    else
-                    {
-                        doc = new JObject();
-                        doc["records"] = new JArray();
-                    }
-
-                    JArray records = (JArray)doc["records"];
-                    bool exists = records.Any(r => r["customer_phone"]?.ToString() == mobile);
-
-                    if (!exists)
-                    {
-                        var newRecord = new JObject
+                        finally
                         {
-                            ["customer_phone"] = mobile,
-                            ["customer_name"] = name
-                        };
-
-                        records.Add(newRecord);
-                        File.WriteAllText(jsonPath, doc.ToString(Formatting.Indented));
-                    }
-
-                    this.Hide();
-                    this.ShowInTaskbar = false;
-
+                            Application.Exit();
+                        }
+                    });
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show("Error running gui.exe: " + ex.Message);
+                    MessageBox.Show("Error: " + ex.Message);
                 }
             };
         }
-        private void EventLoop()
+        public static string ReadStringFromIniFile(string filePath)
         {
-            while (true)
-            {
-                printEvent.WaitOne();   // waits safely
+            if (!File.Exists(filePath))
+                throw new Exception("Failed to open file");
 
-                // Switch to UI thread
-                this.BeginInvoke(new Action(() =>
-                {
-                    OnNewPrintJob();
-                }));
+            var content = new StringBuilder();
+
+            foreach (var line in File.ReadLines(filePath))
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                string trimmed = line.Trim();
+
+                if (!string.IsNullOrEmpty(trimmed))
+                    content.Append(trimmed);
             }
+
+            return content.ToString();
+        }
+        private string UploadBillPdf(string filePath, string mobileNumber, string storeId,string fileName)
+        {
+            string url = "https://api.billbox.co.in/upload-bill";
+
+            if (string.IsNullOrWhiteSpace(filePath))
+                throw new ArgumentException("File path is required.", nameof(filePath));
+
+            if (!File.Exists(filePath))
+                throw new FileNotFoundException("PDF file not found.", filePath);
+
+            if (string.IsNullOrWhiteSpace(mobileNumber))
+                throw new ArgumentException("Mobile number is required.", nameof(mobileNumber));
+
+            if (string.IsNullOrWhiteSpace(storeId))
+                throw new ArgumentException("Store ID is required.", nameof(storeId));
+
+            byte[] fileBytes = File.ReadAllBytes(filePath);
+          //  string fileName = Path.GetFileName(filePath);
+
+            Type winHttpType = Type.GetTypeFromProgID("WinHttp.WinHttpRequest.5.1");
+            if (winHttpType == null)
+                throw new Exception("WinHttp.WinHttpRequest.5.1 is not available on this system.");
+
+            dynamic request = Activator.CreateInstance(winHttpType);
+
+            request.Open("POST", url, false);
+            request.SetRequestHeader("Content-Type", "application/pdf");
+            request.SetRequestHeader("x-mobile", mobileNumber);
+            request.SetRequestHeader("x-new-dir", storeId);
+            request.SetRequestHeader("x-filename", fileName);
+
+            request.Send(fileBytes);
+
+            int status = request.Status;
+            string responseText = request.ResponseText;
+
+            if (status < 200 || status >= 300)
+                throw new Exception($"Upload failed. HTTP {status}: {responseText}");
+
+            return responseText;
         }
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
-            // Prevent app exit
-            e.Cancel = true;
-            this.Hide();
-            this.ShowInTaskbar = false;
-        }
-
-        private void OnNewPrintJob()
-        {
-            // Bring window up
-            ResetFormState();
-            this.Show();
-            this.WindowState = FormWindowState.Normal;
-
-            this.TopMost = true;
-            this.Activate();
-            this.TopMost = false;
-
-            // OPTIONAL:
-            // Load PRN, ask name/mobile, etc.
+            
         }
 
        
-
-      
 
         private void Form1_Load(object sender, EventArgs e)
         {
             this.checkBox1.Checked = false;
             LoadContacts();
-            ResetFormState();
-            this.Hide();              // 
-            this.ShowInTaskbar = false;
         }
 
         private void InitializeSuggestionBoxes()
@@ -269,7 +282,7 @@ namespace Bb
                 DrawMode = DrawMode.OwnerDrawFixed,
                 ItemHeight = 40,
                 Font = new Font("Segoe UI", 13),
-                BackColor = Color.White,
+                BackColor = System.Drawing.Color.White,
                 BorderStyle = BorderStyle.FixedSingle
             };
 
@@ -376,7 +389,6 @@ namespace Bb
             };
         }
 
-
         private void SuggestionBox_DrawItem(object sender, DrawItemEventArgs e)
         {
             if (e.Index < 0) return;
@@ -435,26 +447,7 @@ namespace Bb
 
             ShowSuggestions(suggestionBoxName, matches, boxName);
         }
-        private void ResetFormState()
-        {
-            _updatingFields = true;
-
-            // Clear inputs
-            boxMobile.Text = "";
-            boxName.Text = "";
-
-            // Reset checkbox (e-bill / print)
-            checkBox1.Checked = false;
-
-            // Hide suggestion boxes
-            suggestionBoxMobile.Visible = false;
-            suggestionBoxName.Visible = false;
-
-            // Optional: reset focus
-            boxMobile.Focus();
-
-            _updatingFields = false;
-        }
+        
 
 
         private void ShowSuggestions(ListBox listBox, List<string> matches, TextBox source)
@@ -517,6 +510,10 @@ namespace Bb
         private void boxName_TextChanged_1(object sender, EventArgs e) { }
         private void checkBox1_CheckedChanged(object sender, EventArgs e) { }
 
+        private void checkBox2_CheckedChanged(object sender, EventArgs e)
+        {
+
+        }
     }
     public static class RawPrinterHelper
     {
@@ -552,13 +549,36 @@ namespace Bb
 
         [DllImport("winspool.drv", SetLastError = true)]
         static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
-
         public static bool PrintFile(string printerName, string filePath)
         {
             if (!File.Exists(filePath))
                 return false;
 
-            byte[] bytes = File.ReadAllBytes(filePath);
+            byte[] fileBytes = File.ReadAllBytes(filePath);
+
+            // Search for "<End Doc>" in raw bytes — NO string/ASCII conversion
+            byte[] marker = new byte[] { 0x3C, 0x45, 0x6E, 0x64, 0x20, 0x44, 0x6F, 0x63, 0x3E };
+            // < E  n  d     D  o  c  >
+
+            int markerIndex = IndexOfSequence(fileBytes, marker);
+
+            byte[] trimmedBytes;
+            if (markerIndex >= 0)
+            {
+                trimmedBytes = new byte[markerIndex];
+                Buffer.BlockCopy(fileBytes, 0, trimmedBytes, 0, markerIndex);
+            }
+            else
+            {
+                trimmedBytes = fileBytes;
+            }
+
+            // Feed + cut appended AFTER trimmed content
+            byte[] feedAndCut = { 0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x00 };
+
+            byte[] finalBytes = new byte[trimmedBytes.Length + feedAndCut.Length];
+            Buffer.BlockCopy(trimmedBytes, 0, finalBytes, 0, trimmedBytes.Length);
+            Buffer.BlockCopy(feedAndCut, 0, finalBytes, trimmedBytes.Length, feedAndCut.Length);
 
             if (!OpenPrinter(printerName, out IntPtr hPrinter, IntPtr.Zero))
                 return false;
@@ -568,24 +588,18 @@ namespace Bb
                 DOCINFOA docInfo = new DOCINFOA
                 {
                     pDocName = "Raw Print Job",
-                    pOutputFile = null,
                     pDatatype = "RAW"
                 };
 
-                int job = StartDocPrinter(hPrinter, 1, docInfo);
-                if (job <= 0)
-                    return false;
+                if (StartDocPrinter(hPrinter, 1, docInfo) <= 0) return false;
+                if (!StartPagePrinter(hPrinter)) return false;
 
-                if (!StartPagePrinter(hPrinter))
-                    return false;
+                IntPtr unmanagedBytes = Marshal.AllocHGlobal(finalBytes.Length);
+                Marshal.Copy(finalBytes, 0, unmanagedBytes, finalBytes.Length);
 
-                IntPtr unmanagedBytes = Marshal.AllocHGlobal(bytes.Length);
-                Marshal.Copy(bytes, 0, unmanagedBytes, bytes.Length);
-
-                bool success = WritePrinter(hPrinter, unmanagedBytes, bytes.Length, out _);
+                bool success = WritePrinter(hPrinter, unmanagedBytes, finalBytes.Length, out _);
 
                 Marshal.FreeHGlobal(unmanagedBytes);
-
                 EndPagePrinter(hPrinter);
                 EndDocPrinter(hPrinter);
 
@@ -595,6 +609,20 @@ namespace Bb
             {
                 ClosePrinter(hPrinter);
             }
+        }
+
+        private static int IndexOfSequence(byte[] source, byte[] pattern)
+        {
+            for (int i = 0; i <= source.Length - pattern.Length; i++)
+            {
+                bool found = true;
+                for (int j = 0; j < pattern.Length; j++)
+                {
+                    if (source[i + j] != pattern[j]) { found = false; break; }
+                }
+                if (found) return i;
+            }
+            return -1;
         }
         public static bool SendBytesToPrinter(string printerName, byte[] bytes)
         {
@@ -636,4 +664,5 @@ namespace Bb
         }
 
     }
+    
 }
