@@ -67,6 +67,14 @@ namespace Bb
             this.StartPosition = FormStartPosition.Manual;
             CenterToScreen();
             InitializeComponent();
+
+            //// Disable TAB traversal completely (POS behavior)
+            //boxMobile.TabStop = false;
+            //boxName.TabStop = false;
+            //button1.TabStop = false;
+            //checkBox1.TabStop = false;
+            //checkBox2.TabStop = false;
+
             InitializeSuggestionBoxes();
             
             this.MaximizeBox = false;
@@ -76,7 +84,11 @@ namespace Bb
             this.Load += Form1_Load;
             this.FormClosing += Form1_FormClosing;
             this.WindowState = FormWindowState.Minimized;
-            this.Show();
+            this.Shown += (s, e) =>
+            {
+                // ✅ FINAL authority for checkbox state
+                checkBox1.Checked = Properties.Settings.Default.PaperBillChecked;
+            };
             this.WindowState = FormWindowState.Normal;
 
             this.Resize += (s, e) =>
@@ -88,6 +100,10 @@ namespace Bb
             {
                 try
                 {
+
+                    // ✅ FORCE SAVE Paper‑Bill before app exit
+                    Properties.Settings.Default.PaperBillChecked = checkBox1.Checked;
+                    Properties.Settings.Default.Save();
                     string mobile = boxMobile.Text.Trim();
                     string name = boxName.Text.Trim();
                     string prnPath = @"C:\BillBox\Prints\print.prn";
@@ -254,12 +270,23 @@ namespace Bb
             
         }
 
-       
+
 
         private void Form1_Load(object sender, EventArgs e)
         {
-            this.checkBox1.Checked = false;
+            //this.checkBox1.Checked = false;
             LoadContacts();
+
+
+            // ✅ Restore Paper‑Bill (persistent)
+            checkBox1.Checked = Properties.Settings.Default.PaperBillChecked;
+
+            // ❌ Reports is session‑only
+            checkBox2.Checked = false;
+
+
+            // ENTER moves from Mobile → Name
+            boxMobile.KeyDown += EnterMovesNext;
         }
 
         private void InitializeSuggestionBoxes()
@@ -322,33 +349,78 @@ namespace Bb
             }
             catch { }
 
-            // --- MOBILE BOX EVENTS ---
+
+            /* ================= MOBILE TEXTBOX ================= */
+
             boxMobile.TextChanged += BoxMobile_TextChanged;
+
             boxMobile.KeyDown += (s, e) =>
             {
-                if (e.KeyCode == Keys.Down && suggestionBoxMobile.Visible)
+                // If suggestion list is visible → handle navigation first
+                if (suggestionBoxMobile.Visible)
                 {
-                    suggestionBoxMobile.Focus();
-                    if (suggestionBoxMobile.Items.Count > 0)
+                    if (e.KeyCode == Keys.Down)
+                    {
+                        suggestionBoxMobile.Focus();
                         suggestionBoxMobile.SelectedIndex = 0;
-                    e.Handled = true;
+                        e.Handled = true;
+                        return;
+                    }
+                    else if (e.KeyCode == Keys.Enter)
+                    {
+                        if (suggestionBoxMobile.SelectedItem != null)
+                        {
+                            SelectSuggestion(suggestionBoxMobile);
+                            e.SuppressKeyPress = true;
+                            return;
+                        }
+                    }
+                }
+
+                // Normal ENTER → move to Name
+                if (e.KeyCode == Keys.Enter)
+                {
+                    e.SuppressKeyPress = true;
+                    boxName.Focus();
                 }
             };
 
-            // --- NAME BOX EVENTS ---
+            /* ================= NAME TEXTBOX ================= */
+
             boxName.TextChanged += BoxName_TextChanged;
+
             boxName.KeyDown += (s, e) =>
             {
-                if (e.KeyCode == Keys.Down && suggestionBoxName.Visible)
+                if (suggestionBoxName.Visible)
                 {
-                    suggestionBoxName.Focus();
-                    if (suggestionBoxName.Items.Count > 0)
+                    if (e.KeyCode == Keys.Down)
+                    {
+                        suggestionBoxName.Focus();
                         suggestionBoxName.SelectedIndex = 0;
-                    e.Handled = true;
+                        e.Handled = true;
+                        return;
+                    }
+                    else if (e.KeyCode == Keys.Enter)
+                    {
+                        if (suggestionBoxName.SelectedItem != null)
+                        {
+                            SelectSuggestion(suggestionBoxName);
+                            e.SuppressKeyPress = true;
+                            return;
+                        }
+                    }
+                }
+
+                // ENTER on name → submit
+                if (e.KeyCode == Keys.Enter)
+                {
+                    e.SuppressKeyPress = true;
+                    button1.PerformClick();
                 }
             };
 
-            // --- MOBILE SUGGESTION BOX NAVIGATION ---
+            /* ================= MOBILE SUGGESTION LIST ================= */
+
             suggestionBoxMobile.KeyDown += (s, e) =>
             {
                 if (e.KeyCode == Keys.Up && suggestionBoxMobile.SelectedIndex == 0)
@@ -368,7 +440,8 @@ namespace Bb
                 }
             };
 
-            // --- NAME SUGGESTION BOX NAVIGATION ---
+            /* ================= NAME SUGGESTION LIST ================= */
+
             suggestionBoxName.KeyDown += (s, e) =>
             {
                 if (e.KeyCode == Keys.Up && suggestionBoxName.SelectedIndex == 0)
@@ -388,6 +461,7 @@ namespace Bb
                 }
             };
         }
+
 
         private void SuggestionBox_DrawItem(object sender, DrawItemEventArgs e)
         {
@@ -490,6 +564,22 @@ namespace Bb
             listBox.Visible = false;
         }
 
+        private void EnterMovesNext(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.SuppressKeyPress = true; // remove beep sound
+
+                this.SelectNextControl(
+                    (Control)sender,
+                    forward: true,
+                    tabStopOnly: false,
+                    nested: true,
+                    wrap: true
+                );
+            }
+        }
+
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == WM_SYSCOMMAND)
@@ -506,9 +596,24 @@ namespace Bb
 
             base.WndProc(ref m);
         }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            // Disable TAB and Shift+TAB completely
+            if (keyData == Keys.Tab || keyData == (Keys.Tab | Keys.Shift))
+                return true;
+
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+
         private void button1_Click(object sender, EventArgs e) { }
         private void boxName_TextChanged_1(object sender, EventArgs e) { }
-        private void checkBox1_CheckedChanged(object sender, EventArgs e) { }
+        private void checkBox1_CheckedChanged(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.PaperBillChecked = checkBox1.Checked;
+            Properties.Settings.Default.Save();
+        }
 
         private void checkBox2_CheckedChanged(object sender, EventArgs e)
         {

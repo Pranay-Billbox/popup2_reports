@@ -26,5 +26,7 @@ namespace Bb.Properties
                 return defaultInstance;
             }
         }
+
+        public bool PaperBillChecked { get; internal set; }
     }
 }
