@@ -277,7 +277,34 @@ namespace Bb
             //this.checkBox1.Checked = false;
             LoadContacts();
 
+            checkBox1.KeyDown += (s, ke) =>
+            {
+                if (ke.KeyCode == Keys.Tab)
+                {
+                    checkBox1.Checked = true;
+                    ke.SuppressKeyPress = true;
+                    button1.Focus(); // E‑Bill
+                }
+                else if (ke.KeyCode == Keys.Enter)
+                {
+                    ke.SuppressKeyPress = true;
+                    button1.Focus(); // E‑Bill
+                }
+            };
 
+            // Highlight Paper‑Bill when focused
+            checkBox1.GotFocus += (s, a) =>
+            {
+                checkBox1.BackColor = Color.FromArgb(210, 230, 255); // light blue
+                checkBox1.Font = new Font(checkBox1.Font, FontStyle.Bold);
+            };
+
+            // Remove highlight when focus leaves
+            checkBox1.LostFocus += (s, a) =>
+            {
+                checkBox1.BackColor = SystemColors.Control;
+                checkBox1.Font = new Font(checkBox1.Font, FontStyle.Regular);
+            };
             // ✅ Restore Paper‑Bill (persistent)
             checkBox1.Checked = Properties.Settings.Default.PaperBillChecked;
 
@@ -287,7 +314,59 @@ namespace Bb
 
             // ENTER moves from Mobile → Name
             boxMobile.KeyDown += EnterMovesNext;
+
+
+            // ===== Paper‑Bill full‑width underline (checkbox + text) =====
+
+            // Get native checkbox glyph size
+            Size glyphSize = CheckBoxRenderer.GetGlyphSize(
+                this.CreateGraphics(),
+                System.Windows.Forms.VisualStyles.CheckBoxState.UncheckedNormal
+            );
+
+            // Measure text width
+            Size textSize = TextRenderer.MeasureText(
+                checkBox1.Text,
+                checkBox1.Font,
+                Size.Empty,
+                TextFormatFlags.NoPadding
+            );
+
+            // Calculate FULL visual width
+            int fullWidth =
+                glyphSize.Width     // checkbox square
+                + 6                 // gap between box and text
+                + textSize.Width;   // text width
+
+            Panel paperBillFocusLine = new Panel
+            {
+                Height = 2,
+                Width = fullWidth,
+                BackColor = Color.RoyalBlue,
+                Visible = false
+            };
+
+            // Position underline exactly under checkbox + text
+            paperBillFocusLine.Left = checkBox1.Left;
+            paperBillFocusLine.Top = checkBox1.Bottom + 2;
+
+            this.Controls.Add(paperBillFocusLine);
+            paperBillFocusLine.BringToFront();
+
+            // Show underline when Paper‑Bill gets focus
+            checkBox1.GotFocus += (s, a) =>
+            {
+                paperBillFocusLine.Visible = true;
+            };
+
+            // Hide underline when focus leaves
+            checkBox1.LostFocus += (s, a) =>
+            {
+                paperBillFocusLine.Visible = false;
+            };
         }
+
+
 
         private void InitializeSuggestionBoxes()
         {
@@ -411,12 +490,14 @@ namespace Bb
                     }
                 }
 
-                // ENTER on name → submit
+
+                // ENTER on Name → go to Paper‑Bill ✅
                 if (e.KeyCode == Keys.Enter)
                 {
                     e.SuppressKeyPress = true;
-                    button1.PerformClick();
+                    checkBox1.Focus();   // Paper‑Bill
                 }
+
             };
 
             /* ================= MOBILE SUGGESTION LIST ================= */
